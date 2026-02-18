@@ -2,6 +2,7 @@ import os
 import gspread
 from google.oauth2.service_account import Credentials
 import json
+import re
 from datetime import datetime
 from telegram import (
     Update,
@@ -19,7 +20,7 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-CATEGORIES = ["🏠Casa", "🛒Spesa", "🍕Ristorante", "⚕️Salute", "✈️Viaggi", "🍿Tempo libero", "⚡Bollette", "🏃Sport", "🎁Regali", "👠Estetica", "🐕Curry", "✨Altro"]
+CATEGORIES = ["🏠 Casa", "🛒 Spesa", "🍕 Ristorante", "⚕️ Salute", "✈️ Viaggi", "🍿 Tempo libero", "⚡ Bollette", "🏃 Sport", "🎁 Regali", "👠 Estetica", "🐕 Curry", "✨ Altro"]
 
 user_states = {}
 user_modes = {}
@@ -165,57 +166,92 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 
 async def start_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Prende gli argomenti dopo il comando (es. /spesa 15.50)
-    if not context.args:
-        await update.message.reply_text("❌ Errore: usa il comando seguito dall'importo.\nEsempio: `/spesa 15.50`", parse_mode="Markdown")
-        return
-
-    try:
-        amount_str = context.args[0].replace(",", ".")
-        amount = float(amount_str)
-    except ValueError:
-        await update.message.reply_text("❌ Importo non valido. Usa i numeri (es. 10.50).")
-        return
-
+    full_text = " ".join(context.args) if context.args else ""
     user_name = update.message.from_user.first_name
-    expense = default_expense(user_name)
-    expense["amount"] = amount
-    
     key = (update.effective_chat.id, update.effective_user.id)
-    user_states[key] = expense
+    
+    # Inizializziamo l'oggetto spesa di default
+    expense = default_expense(user_name)
 
+    # Se l'utente ha scritto qualcosa dopo il comando (es. /spesa 10)
+    if full_text:
+        # 1. Trova l'importo
+        amount_match = re.search(r"(\d+(?:[\.,]\d+)?)", full_text)
+        if amount_match:
+            amount_str = amount_match.group(1).replace(",", ".")
+            expense["amount"] = float(amount_str)
+            # Rimuoviamo l'importo dal testo per estrarre il resto
+            remaining_text = full_text.replace(amount_match.group(1), "", 1).strip()
+        else:
+            # Se ha scritto testo ma nessun numero, lo trattiamo come descrizione/categoria
+            expense["amount"] = 0.0
+            remaining_text = full_text
+
+        # 2. Cerca categoria
+        found_category = None
+        clean_remaining = remaining_text.lower()
+        for cat in CATEGORIES:
+            cat_name = "".join(filter(str.isalnum, cat)).lower()
+            if cat_name in clean_remaining:
+                found_category = cat
+                remaining_text = re.sub(cat_name, "", remaining_text, flags=re.IGNORECASE).strip()
+                break
+        
+        expense["category"] = found_category
+        # 3. Descrizione (rimuove trattini o simboli rimasti)
+        expense["description"] = remaining_text.strip("- ").strip() or None
+    
+    else:
+        # Se l'utente ha scritto solo /spesa, mettiamo importo a 0
+        expense["amount"] = 0.0
+
+    # Salviamo lo stato e mostriamo il menu
+    user_states[key] = expense
     text_resp, keyboard = render_expense(expense)
-    await update.message.reply_text(text_resp, reply_markup=keyboard, parse_mode="Markdown")
+    
+    await update.message.reply_text(
+        text_resp, 
+        reply_markup=keyboard, 
+        parse_mode="Markdown"
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = (update.effective_chat.id, update.effective_user.id)
-    
-    # Se stiamo aspettando descrizione
-    if user_modes.get(key) == "waiting_description":
-        expense = user_states.get(key)
-        if expense:
-            expense["description"] = update.message.text.strip()
-        user_modes.pop(key, None)
-
-        txt, kb = render_expense(expense)
-        await update.message.reply_text(txt, reply_markup=kb)
-        return
-    
     text = update.message.text.strip()
     expense = user_states.get(key)
 
-    # Gestisce SOLO l'inserimento della data se attivato dal menu
-    if expense and expense.get("waiting_for_date"):
+    if not expense:
+        return # Nessuna sessione attiva, ignora il messaggio
+
+    # 1. Se stiamo aspettando la descrizione
+    if user_modes.get(key) == "waiting_description":
+        expense["description"] = text
+        user_modes.pop(key, None)
+    
+    # 2. Se stiamo aspettando la data
+    elif expense.get("waiting_for_date"):
         try:
             day, month = map(int, text.split('-'))
-            new_date = datetime(datetime.now().year, month, day)
-            expense["date"] = new_date
+            expense["date"] = datetime(datetime.now().year, month, day)
             expense.pop("waiting_for_date", None)
-            
-            text_resp, keyboard = render_expense(expense)
-            await update.message.reply_text(text_resp, reply_markup=keyboard, parse_mode="Markdown")
         except ValueError:
             await update.message.reply_text("❌ Usa il formato GG-MM.")
+            return
+
+    # 3. NOVITÀ: Se l'utente scrive un numero e l'importo attuale è 0 (o vuole sovrascriverlo)
+    else:
+        # Controlliamo se il messaggio è un numero (es. "15.50" o "15,50")
+        amount_match = re.match(r"^(\d+(?:[\.,]\d+)?)$", text)
+        if amount_match:
+            amount_str = amount_match.group(1).replace(",", ".")
+            expense["amount"] = float(amount_str)
+        else:
+            # Se non è un numero e non siamo in modalità specifica, non facciamo nulla
+            return
+
+    # Aggiorna il menu con i nuovi dati
+    txt, kb = render_expense(expense)
+    await update.message.reply_text(txt, reply_markup=kb, parse_mode="Markdown")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
