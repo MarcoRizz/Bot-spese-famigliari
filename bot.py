@@ -22,6 +22,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 CATEGORIES = ["🏠Casa", "🛒Spesa", "🍕Ristorante", "⚕️Salute", "✈️Viaggi", "🍿Tempo libero", "⚡Bollette", "🏃Sport", "🎁Regali", "👠Estetica", "🐕Curry", "✨Altro"]
 
 user_states = {}
+user_modes = {}
 
 # -----------------------------
 # CONFIG GOOGLE SHEETS
@@ -48,6 +49,7 @@ def default_expense(user_name):
         "amount": None,
         "category": None,
         "date": datetime.today(),
+        "description": None,
         "paid_by": {
             "Marco": 1,
             "Veronica": 1,
@@ -68,42 +70,42 @@ def render_expense(expense):
     paid_pct = percentage_map(expense["paid_by"])
     ref_pct = percentage_map(expense["refer_to"])
 
-    text = f"💰 *{expense['amount']:.2f} €*\n"
-    text += f"📂 {expense['category'] or '❓'}\n"
-    text += f"📅 {expense['date'].strftime('%d-%m-%Y')}\n\n"
-    
-    p_str = ", ".join([f"{k}" for k, v in paid_pct.items() if v > 0])
-    r_str = "Entrambi" if all(v > 0 for v in ref_pct.values()) else ", ".join([f"{k}" for k, v in ref_pct.items() if v > 0])
-    
-    text += f"💳 Pagato da: {p_str}\n"
-    text += f"👥 Riguarda: {r_str}\n"
+    text = f"💰 {expense['amount']:.2f} €\n\n"
+    text += f"📂 Categoria: {expense['category'] or '❓'}\n"
+    text += f"📝 Descrizione: {expense['description'] or '-'}\n"
+    text += f"📅 Data: {expense['date'].strftime('%d-%m-%Y')}\n\n"
+
+    text += "💳 Pagato da:\n"
+    text += "\n".join(f"{k} {v}%" for k, v in paid_pct.items())
+
+    text += "\n\n👥 Riguarda:\n"
+    text += "\n".join(f"{k} {v}%" for k, v in ref_pct.items())
 
     keyboard = [
-        [
-            InlineKeyboardButton("📂 Categoria", callback_data="edit_cat"),
-            InlineKeyboardButton("📅 Data", callback_data="edit_date")
-        ],
-        [
-            InlineKeyboardButton("💳 Pagato", callback_data="edit_paid"),
-            InlineKeyboardButton("👥 Riguarda", callback_data="edit_ref")
-        ],
-        [InlineKeyboardButton("✅ CONFERMA E SALVA", callback_data="confirm")],
-        [InlineKeyboardButton("❌ ANNULLA", callback_data="cancel")] # Pulsante Annulla
+        [InlineKeyboardButton("Categoria", callback_data="edit_cat")],
+        [InlineKeyboardButton("Descrizione", callback_data="edit_desc")],
+        [InlineKeyboardButton("Pagato", callback_data="edit_paid")],
+        [InlineKeyboardButton("Riguarda", callback_data="edit_ref")],
+        [InlineKeyboardButton("Data", callback_data="edit_date")],
+        [InlineKeyboardButton("✅ Conferma", callback_data="confirm")]
     ]
 
     return text, InlineKeyboardMarkup(keyboard)
 
 def save_expense(expense, user_name):
     row = [
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # Timestamp
-        f"{expense['amount']:.2f}",                   # Importo
-        expense["category"],                           # Categoria
-        expense["date"].strftime("%d-%m-%Y"),         # Data
-        json.dumps(expense["paid_by"]),               # Paid_by
-        json.dumps(expense["refer_to"]),             # Refer_to
-        user_name                                     # Inserito_da
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        f"{expense['amount']:.2f}",
+        expense["category"],
+        expense["description"] or "",  # <-- NUOVA COLONNA
+        expense["date"].strftime("%d-%m-%Y"),
+        json.dumps(expense["paid_by"]),
+        json.dumps(expense["refer_to"]),
+        user_name
     ]
+
     sheet.append_row(row)
+
 
 async def delete_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Chiede conferma prima di eliminare l'ultima riga"""
@@ -181,8 +183,20 @@ async def start_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text_resp, reply_markup=keyboard, parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
     key = (update.effective_chat.id, update.effective_user.id)
+    
+    # Se stiamo aspettando descrizione
+    if user_modes.get(key) == "waiting_description":
+        expense = user_states.get(key)
+        if expense:
+            expense["description"] = update.message.text.strip()
+        user_modes.pop(key, None)
+
+        txt, kb = render_expense(expense)
+        await update.message.reply_text(txt, reply_markup=kb)
+        return
+    
+    text = update.message.text.strip()
     expense = user_states.get(key)
 
     # Gestisce SOLO l'inserimento della data se attivato dal menu
@@ -203,7 +217,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
     
-    # --- LOGICA ELIMINAZIONE ---
+    if data == "edit_desc":
+        user_modes[key] = "waiting_description"
+        await query.answer()
+        await query.edit_message_text("📝 Scrivi la descrizione della spesa:")
+        return
+
+# --- LOGICA ELIMINAZIONE ---
     if data == "confirm_delete":
         try:
             all_rows = sheet.get_all_values()
@@ -343,7 +363,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     PORT = int(os.getenv("PORT", 10000))
     RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-    
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     # Comandi
