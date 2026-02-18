@@ -82,12 +82,17 @@ def render_expense(expense):
     text += "\n".join(f"{k} {v}%" for k, v in ref_pct.items())
 
     keyboard = [
-        [InlineKeyboardButton("Categoria", callback_data="edit_cat")],
-        [InlineKeyboardButton("Descrizione", callback_data="edit_desc")],
-        [InlineKeyboardButton("Pagato", callback_data="edit_paid")],
-        [InlineKeyboardButton("Riguarda", callback_data="edit_ref")],
-        [InlineKeyboardButton("Data", callback_data="edit_date")],
-        [InlineKeyboardButton("✅ Conferma", callback_data="confirm")]
+        [
+            InlineKeyboardButton("📂 Categoria", callback_data="edit_cat"),
+            InlineKeyboardButton("📝 Descrizione", callback_data="edit_desc")
+        ],
+        [
+            InlineKeyboardButton("💳 Pagato", callback_data="edit_paid"),
+            InlineKeyboardButton("👥 Riguarda", callback_data="edit_ref")
+        ],
+        [InlineKeyboardButton("📅 Data", callback_data="edit_date")],
+        [InlineKeyboardButton("✅ CONFERMA E SALVA", callback_data="confirm")],
+        [InlineKeyboardButton("❌ ANNULLA", callback_data="cancel")]
     ]
 
     return text, InlineKeyboardMarkup(keyboard)
@@ -217,6 +222,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
     
+    key = (update.effective_chat.id, update.effective_user.id)
+    expense = user_states.get(key)
+    
     if data == "edit_desc":
         user_modes[key] = "waiting_description"
         await query.answer()
@@ -241,10 +249,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Operazione annullata. La spesa è rimasta nel foglio.")
         return
 
-    # --- LOGICA ESISTENTE (Spesa in corso) ---
-    key = (update.effective_chat.id, update.effective_user.id)
-    expense = user_states.get(key)
-    
     # Se l'utente clicca un pulsante di modifica ma la sessione è scaduta
     if not expense:
         # Se non è una delle callback di eliminazione sopra, ignoriamo o avvisiamo
