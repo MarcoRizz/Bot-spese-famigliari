@@ -341,6 +341,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 
 if __name__ == "__main__":
+    PORT = int(os.getenv("PORT", 10000))
+    RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+    
     app = ApplicationBuilder().token(TOKEN).build()
 
     # Comandi
@@ -353,4 +356,8 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     print("Bot in ascolto...")
-    app.run_polling()
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=f"https://{RENDER_EXTERNAL_HOSTNAME}/",
+    )
