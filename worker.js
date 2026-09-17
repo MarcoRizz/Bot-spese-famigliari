@@ -138,6 +138,46 @@ async function handleMessage(msg, env) {
     return new Response("ok");
   }
 
+  // Waiting for manual shares of "chi ha pagato"
+  if (expense.mode === "paid_manual") {
+    const shares = parseShares(text, PAID_NAMES);
+    if (shares) {
+      expense.paid_by = shares;
+      expense.paid_manual = true;
+      delete expense.mode;
+      await cleanupPrompt(env, chatId, expense, msg.message_id);
+      delete expense.promptMsgId;
+      expense = await refreshMainMessage(env, chatId, expense);
+      await setState(env, key, expense);
+    } else {
+      await deleteMessage(env, chatId, msg.message_id);
+      await editMessage(env, chatId, expense.promptMsgId, {
+        text: "❌ Formato non valido. Usa nomi tra Marco, Veronica, Conto, es.:\nMarco 60, Veronica 40"
+      });
+    }
+    return new Response("ok");
+  }
+
+  // Waiting for manual shares di "riguarda"
+  if (expense.mode === "ref_manual") {
+    const shares = parseShares(text, REF_NAMES);
+    if (shares) {
+      expense.refer_to = shares;
+      expense.refer_manual = true;
+      delete expense.mode;
+      await cleanupPrompt(env, chatId, expense, msg.message_id);
+      delete expense.promptMsgId;
+      expense = await refreshMainMessage(env, chatId, expense);
+      await setState(env, key, expense);
+    } else {
+      await deleteMessage(env, chatId, msg.message_id);
+      await editMessage(env, chatId, expense.promptMsgId, {
+        text: "❌ Formato non valido. Usa nomi tra Marco, Veronica, es.:\nMarco 70, Veronica 30"
+      });
+    }
+    return new Response("ok");
+  }
+
   // Waiting for manual date (GG-MM)
   if (expense.mode === "date") {
     const match = text.match(/^(\d{1,2})-(\d{1,2})$/);
@@ -328,6 +368,7 @@ async function handleCallback(query, env) {
             { text: "Marco", callback_data: "paid:Marco" },
             { text: "Veronica", callback_data: "paid:Veronica" }
           ],
+          [{ text: "✏️ Quote manuali", callback_data: "paid_manual" }],
           [{ text: "🔙 Indietro", callback_data: "back" }]
         ]
       }
@@ -335,9 +376,22 @@ async function handleCallback(query, env) {
     return new Response("ok");
   }
 
+  if (data === "paid_manual") {
+    expense.mode = "paid_manual";
+    const prompt = await sendMessage(env, chatId, {
+      text: "✍️ Rispondi con le quote di chi ha pagato (nomi validi: Marco, Veronica, Conto), ad esempio:\nMarco 60, Veronica 40",
+      forceReply: true,
+      replyToMessageId: msgId
+    });
+    expense.promptMsgId = prompt?.result?.message_id;
+    await setState(env, key, expense);
+    return new Response("ok");
+  }
+
   if (data.startsWith("paid:")) {
     const who = data.slice(5);
     expense.paid_by = { [who]: 1 };
+    delete expense.paid_manual;
   }
 
   // Refer-to menu
@@ -354,6 +408,7 @@ async function handleCallback(query, env) {
             { text: "Marco", callback_data: "ref:Marco" },
             { text: "Veronica", callback_data: "ref:Veronica" }
           ],
+          [{ text: "✏️ Quote manuali", callback_data: "ref_manual" }],
           [{ text: "🔙 Indietro", callback_data: "back" }]
         ]
       }
@@ -361,8 +416,21 @@ async function handleCallback(query, env) {
     return new Response("ok");
   }
 
+  if (data === "ref_manual") {
+    expense.mode = "ref_manual";
+    const prompt = await sendMessage(env, chatId, {
+      text: "✍️ Rispondi con le quote di chi riguarda la spesa (nomi validi: Marco, Veronica), ad esempio:\nMarco 70, Veronica 30",
+      forceReply: true,
+      replyToMessageId: msgId
+    });
+    expense.promptMsgId = prompt?.result?.message_id;
+    await setState(env, key, expense);
+    return new Response("ok");
+  }
+
   if (data.startsWith("ref:")) {
     const who = data.slice(4);
+    delete expense.refer_manual;
     if (who === "ordinaria") {
       expense.refer_to = { ordinaria: 1 };
     } else if (who === "straordinaria") {
@@ -426,8 +494,8 @@ async function handleCallback(query, env) {
         `📂 ${expense.category}\n` +
         `📝 ${expense.description || "—"}\n` +
         `📅 ${formatDate(expense.date)}\n` +
-        `💳 ${renderPaidBy(expense.paid_by)}\n` +
-        `👥 ${renderReferTo(expense.refer_to)}\n` +
+        `💳 ${renderPaidBy(expense.paid_by, expense.paid_manual)}\n` +
+        `👥 ${renderReferTo(expense.refer_to, expense.refer_manual)}\n` +
         `👤 ${userName}`;
       await editMessage(env, chatId, msgId, {
         text: finalText,
@@ -503,12 +571,43 @@ function parseSpesaArgs(args) {
   return expense;
 }
 
-function renderPaidBy(paid_by) {
+const PAID_NAMES = ["Marco", "Veronica", "Conto"];
+const REF_NAMES = ["Marco", "Veronica"];
+
+// Interpreta un testo tipo "Marco 60, Veronica 40" in { Marco: 60, Veronica: 40 }.
+// Ritorna null se il testo non è valido o contiene nomi non ammessi.
+function parseShares(text, allowedNames) {
+  const parts = text.split(/[,\n]+/).map(p => p.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  const result = {};
+  for (const part of parts) {
+    const m = part.match(/^([A-Za-zÀ-ÿ]+)\s+(\d+(?:[.,]\d+)?)\s*%?$/);
+    if (!m) return null;
+    const canonical = allowedNames.find(n => n.toLowerCase() === m[1].toLowerCase());
+    const value = parseFloat(m[2].replace(",", "."));
+    if (!canonical || !(value > 0)) return null;
+    result[canonical] = (result[canonical] || 0) + value;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+// Mostra le quote come percentuali, es. "Marco 60% + Veronica 40%"
+function renderShares(obj) {
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return "—";
+  if (keys.length === 1) return keys[0];
+  const total = keys.reduce((sum, k) => sum + Number(obj[k]), 0) || 1;
+  return keys.map(k => `${k} ${Math.round((Number(obj[k]) / total) * 100)}%`).join(" + ");
+}
+
+function renderPaidBy(paid_by, manual) {
+  if (manual) return renderShares(paid_by);
   const keys = Object.keys(paid_by);
   return keys.length === 1 ? keys[0] : keys.join(" + ");
 }
 
-function renderReferTo(refer_to) {
+function renderReferTo(refer_to, manual) {
+  if (manual) return renderShares(refer_to);
   if (refer_to.ordinaria) return "Entrambi (ordinaria)";
   const keys = Object.keys(refer_to);
   if (keys.length === 2) return "Entrambi (straordinaria)";
@@ -531,8 +630,8 @@ function renderExpense(expense) {
     `📂 Categoria: ${expense.category || "❓"}\n` +
     `📝 Descrizione: ${expense.description || "—"}\n` +
     `📅 Data: ${formatDate(expense.date)}\n\n` +
-    `💳 Pagato da: ${renderPaidBy(expense.paid_by)}\n` +
-    `👥 Riguarda: ${renderReferTo(expense.refer_to)}`;
+    `💳 Pagato da: ${renderPaidBy(expense.paid_by, expense.paid_manual)}\n` +
+    `👥 Riguarda: ${renderReferTo(expense.refer_to, expense.refer_manual)}`;
 
   const keyboard = {
     inline_keyboard: [
