@@ -8,6 +8,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ForceReply,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -84,7 +85,10 @@ def render_expense(expense):
 
     keyboard = [
         [
-            InlineKeyboardButton("📂 Categoria", callback_data="edit_cat"),
+            InlineKeyboardButton("💰 Importo", callback_data="edit_amount"),
+            InlineKeyboardButton("📂 Categoria", callback_data="edit_cat")
+        ],
+        [
             InlineKeyboardButton("📝 Descrizione", callback_data="edit_desc")
         ],
         [
@@ -223,12 +227,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not expense:
         return # Nessuna sessione attiva, ignora il messaggio
 
+    mode = user_modes.get(key)
+
     # 1. Se stiamo aspettando la descrizione
-    if user_modes.get(key) == "waiting_description":
+    if mode == "waiting_description":
         expense["description"] = text
         user_modes.pop(key, None)
-    
-    # 2. Se stiamo aspettando la data
+
+    # 2. Se stiamo aspettando l'importo (via pulsante "💰 Importo")
+    elif mode == "waiting_amount":
+        amount_match = re.match(r"^(\d+(?:[\.,]\d+)?)$", text)
+        if amount_match:
+            amount_str = amount_match.group(1).replace(",", ".")
+            expense["amount"] = float(amount_str)
+            user_modes.pop(key, None)
+        else:
+            await update.message.reply_text("❌ Inserisci un numero valido (es. 15.50).")
+            return
+
+    # 3. Se stiamo aspettando la data
     elif expense.get("waiting_for_date"):
         try:
             day, month = map(int, text.split('-'))
@@ -238,15 +255,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Usa il formato GG-MM.")
             return
 
-    # 3. NOVITÀ: Se l'utente scrive un numero e l'importo attuale è 0 (o vuole sovrascriverlo)
+    # 4. Fallback: digitare direttamente un numero senza passare dal pulsante
+    #    (funziona sempre in chat privata; in gruppo solo se il messaggio
+    #    è una risposta a un messaggio del bot, per via della privacy mode)
     else:
-        # Controlliamo se il messaggio è un numero (es. "15.50" o "15,50")
         amount_match = re.match(r"^(\d+(?:[\.,]\d+)?)$", text)
         if amount_match:
             amount_str = amount_match.group(1).replace(",", ".")
             expense["amount"] = float(amount_str)
         else:
-            # Se non è un numero e non siamo in modalità specifica, non facciamo nulla
             return
 
     # Aggiorna il menu con i nuovi dati
@@ -263,8 +280,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "edit_desc":
         user_modes[key] = "waiting_description"
-        await query.answer()
-        await query.edit_message_text("📝 Scrivi la descrizione della spesa:")
+        await query.edit_message_text("📝 Scrivi la descrizione della spesa qui sotto 👇")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="✍️ Rispondi a questo messaggio con la descrizione:",
+            reply_markup=ForceReply(selective=True),
+            reply_to_message_id=query.message.message_id,
+        )
+        return
+
+    if data == "edit_amount":
+        user_modes[key] = "waiting_amount"
+        await query.edit_message_text("💰 Scrivi il nuovo importo qui sotto 👇")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="✍️ Rispondi a questo messaggio con l'importo (es. 15.50):",
+            reply_markup=ForceReply(selective=True),
+            reply_to_message_id=query.message.message_id,
+        )
         return
 
 # --- LOGICA ELIMINAZIONE ---
@@ -306,8 +339,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [InlineKeyboardButton("🔙 Indietro", callback_data="back")]
         ]
-        await query.edit_message_text("📅 Quando è avvenuta la spesa?\n(Oppure scrivi `GG-MM`)", 
+        await query.edit_message_text("📅 Quando è avvenuta la spesa?\n(Oppure rispondi al prossimo messaggio con `GG-MM`)",
                                       reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="✍️ Oppure rispondi qui con la data (formato GG-MM):",
+            reply_markup=ForceReply(selective=True),
+            reply_to_message_id=query.message.message_id,
+        )
         return
 
     if data.startswith("set_date:"):
