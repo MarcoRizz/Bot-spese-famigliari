@@ -1,4 +1,7 @@
 name = "bot-spese-famigliari"
 main = "worker.js"
 compatibility_date = "2026-09-17"
-[[kv_namespaces]] binding = "USER_STATE" id = c1651507eb1b48b5872d2ab2f7f199a8
+
+[[kv_namespaces]]
+binding = "USER_STATE"
+id = "c1651507eb1b48b5872d2ab2f7f199a8"
