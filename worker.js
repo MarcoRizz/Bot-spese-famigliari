@@ -547,26 +547,60 @@ function parseSpesaArgs(args) {
 
   let remaining = args;
 
-  // Extract amount
+  // 1. Data: parole chiave "oggi"/"ieri", oppure formato GG-MM o GG/MM.
+  //    Va estratta prima dell'importo per non confondere "12-06" con un numero.
+  const dateWordMatch = remaining.match(/\b(oggi|ieri)\b/i);
+  if (dateWordMatch) {
+    if (dateWordMatch[1].toLowerCase() === "ieri") {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      expense.date = d.toISOString().slice(0, 10);
+    }
+    // "oggi" è già il default impostato da createDefaultExpense
+    remaining = remaining.replace(dateWordMatch[0], "").trim();
+  } else {
+    const dateMatch = remaining.match(/\b(\d{1,2})[\/\-](\d{1,2})\b/);
+    if (dateMatch) {
+      const day = parseInt(dateMatch[1], 10);
+      const month = parseInt(dateMatch[2], 10);
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+        const year = new Date().getFullYear();
+        expense.date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        remaining = remaining.replace(dateMatch[0], "").trim();
+      }
+    }
+  }
+
+  // 2. Importo
   const amountMatch = remaining.match(/(\d+(?:[.,]\d+)?)/);
   if (amountMatch) {
     expense.amount = parseFloat(amountMatch[1].replace(",", "."));
     remaining = remaining.replace(amountMatch[1], "").trim();
   }
 
-  // Extract category by stripping non-alphanumeric chars and matching
+  // 3. Categoria: se più categorie compaiono nel testo, vince quella scritta per prima
+  //    (in base alla posizione nel testo, non all'ordine dell'array CATEGORIES)
   const lowerRemaining = remaining.toLowerCase();
+  let bestIndex = Infinity;
+  let bestCat = null;
+  let bestKey = null;
   for (const cat of CATEGORIES) {
     const catKey = cat.replace(/[^a-zA-ZÀ-ÿ0-9]/g, "").toLowerCase();
-    if (catKey && lowerRemaining.includes(catKey)) {
-      expense.category = cat;
-      remaining = remaining.replace(new RegExp(catKey, "i"), "").trim();
-      break;
+    if (!catKey) continue;
+    const idx = lowerRemaining.indexOf(catKey);
+    if (idx !== -1 && idx < bestIndex) {
+      bestIndex = idx;
+      bestCat = cat;
+      bestKey = catKey;
     }
+  }
+  if (bestCat) {
+    expense.category = bestCat;
+    remaining = remaining.replace(new RegExp(bestKey, "i"), "").trim();
   }
 
   // Remaining text is description
-  const desc = remaining.replace(/^[\s\-]+/, "").trim();
+  const desc = remaining.replace(/^[\s\-]+/, "").replace(/\s{2,}/g, " ").trim();
   expense.description = desc || null;
   return expense;
 }
