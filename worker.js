@@ -62,20 +62,36 @@ async function handleMessage(msg, env) {
   if (text.startsWith("/elimina")) {
     try {
       const rows = await getSheetRows(env);
+
       if (rows.length <= 1) {
         await sendText(env, chatId, "📭 Non ci sono spese da eliminare.");
       } else {
         const last = rows[rows.length - 1];
-        const desc = last[3] ? ` (${last[3]})` : "";
-        await sendMessage(env, chatId, {
-          text: `⚠️ Sei sicuro di voler eliminare l'ultima spesa?\n\n💰 ${last[1]}€ — ${last[2]}${desc}`,
-          keyboard: {
-            inline_keyboard: [[
-              { text: "✅ Sì, elimina", callback_data: "confirm_delete" },
-              { text: "❌ No, annulla", callback_data: "cancel_delete" }
-            ]]
-          }
-        });
+
+        // Controlla la colonna I (indice 8)
+        const insertionId = last[8];
+
+        if (insertionId !== undefined && insertionId !== null && String(insertionId).trim() !== "") {
+          // La spesa è già stata registrata
+          await sendText(
+            env,
+            chatId,
+            "⚠️ L'ultima spesa è già stata registrata e non può essere eliminata."
+          );
+        } else {
+          // La spesa non è ancora stata registrata: chiedi conferma
+          const desc = last[3] ? ` (${last[3]})` : "";
+
+          await sendMessage(env, chatId, {
+            text: `⚠️ Sei sicuro di voler eliminare l'ultima spesa?\n\n💰 ${last[1]}€ — ${last[2]}${desc}`,
+            keyboard: {
+              inline_keyboard: [[
+                { text: "✅ Sì, elimina", callback_data: "confirm_delete" },
+                { text: "❌ No, annulla", callback_data: "cancel_delete" }
+              ]]
+            }
+          });
+        }
       }
     } catch (e) {
       await sendText(env, chatId, `❌ Errore: ${e.message}`);
